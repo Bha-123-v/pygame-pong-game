@@ -28,6 +28,23 @@ BALL_RADIUS = 10
 BALL_SPEED = 350
 MAX_SCORE = 7
 
+# Paddle color unlock system. Each color has a required survival time
+# in seconds before it becomes available in one-player mode.
+PADDLE_COLORS = {
+    "classic": WHITE,
+    "cyan": (92, 198, 255),
+    "mint": (110, 255, 180),
+    "violet": (180, 120, 255),
+    "gold": (255, 198, 80),
+}
+PADDLE_UNLOCKS = {
+    "classic": 0,
+    "cyan": 10,
+    "mint": 20,
+    "violet": 40,
+    "gold": 70,
+}
+
 
 # ------------------------------------------------------------
 # Model layer
@@ -38,7 +55,7 @@ MAX_SCORE = 7
 class Paddle:
     """Represents one player's paddle on the screen."""
 
-    def __init__(self, x, y, width, height, speed, up_key, down_key, player_name="Player"):
+    def __init__(self, x, y, width, height, speed, up_key, down_key, player_name="Player", color=WHITE):
         # Position and size of the paddle.
         self.x = x
         self.y = y
@@ -50,6 +67,7 @@ class Paddle:
         self.up_key = up_key
         self.down_key = down_key
         self.player_name = player_name
+        self.color = color
 
         # Score for this paddle.
         self.score = 0
@@ -156,7 +174,8 @@ class PongModel:
             PADDLE_SPEED,
             pygame.K_w,
             pygame.K_s,
-            "Left"
+            "Left",
+            PADDLE_COLORS["classic"],
         )
 
         self.right_paddle = Paddle(
@@ -167,11 +186,19 @@ class PongModel:
             PADDLE_SPEED,
             pygame.K_UP,
             pygame.K_DOWN,
-            "Right"
+            "Right",
+            WHITE,
         )
 
         # Create the ball.
         self.ball = Ball(WIDTH / 2, HEIGHT / 2, BALL_RADIUS, BALL_SPEED)
+
+        # High score and paddle unlock system for one-player mode.
+        self.high_score_seconds = 0.0
+        self.current_survival_seconds = 0.0
+        self.selected_paddle_color = "classic"
+        self.unlocked_paddle_colors = ["classic"]
+        self.refresh_unlocks()
 
     def switch_mode(self, mode):
         """Change between single-player and two-player gameplay."""
@@ -184,17 +211,48 @@ class PongModel:
         self.right_paddle.y = HEIGHT / 2 - PADDLE_HEIGHT / 2
         self.ball.reset()
 
+    def refresh_unlocks(self):
+        """Unlock paddle colors based on the best one-player survival time."""
+        unlocked = []
+        for color_name, unlock_time in sorted(PADDLE_UNLOCKS.items(), key=lambda item: item[1]):
+            if self.high_score_seconds >= unlock_time:
+                unlocked.append(color_name)
+
+        self.unlocked_paddle_colors = unlocked if unlocked else ["classic"]
+
+        if self.selected_paddle_color not in self.unlocked_paddle_colors:
+            self.selected_paddle_color = self.unlocked_paddle_colors[0]
+
+        self.left_paddle.color = PADDLE_COLORS[self.selected_paddle_color]
+
+    def cycle_paddle_color(self, direction=1):
+        """Move through unlocked paddle colors."""
+        if not self.unlocked_paddle_colors:
+            return
+
+        current_index = self.unlocked_paddle_colors.index(self.selected_paddle_color)
+        next_index = (current_index + direction) % len(self.unlocked_paddle_colors)
+        self.selected_paddle_color = self.unlocked_paddle_colors[next_index]
+        self.left_paddle.color = PADDLE_COLORS[self.selected_paddle_color]
+
     def update(self, dt, keys):
         """Update the game state for one frame.
 
         dt: elapsed time since last frame.
         keys: dictionary containing pressed keys.
         """
+        if self.is_game_over():
+            return
+
         # Update paddle positions based on current mode.
         if self.mode == "single":
             self.update_single_player_paddles(dt, keys)
+            self.current_survival_seconds += dt
+            self.high_score_seconds = max(self.high_score_seconds, self.current_survival_seconds)
+            self.refresh_unlocks()
         else:
             self.update_two_player_paddles(dt, keys)
+            self.current_survival_seconds = 0.0
 
         # Move the ball and handle collisions with walls and paddles.
         self.ball.update(dt)
@@ -205,6 +263,7 @@ class PongModel:
         # Award points when the ball passes a paddle.
         if self.ball.x - self.ball.radius <= 0:
             self.right_paddle.score += 1
+            self.current_survival_seconds = 0.0
             self.reset_round()
         elif self.ball.x + self.ball.radius >= WIDTH:
             self.left_paddle.score += 1
@@ -284,7 +343,14 @@ class PongController:
             elif event.key == pygame.K_r:
                 self.model.left_paddle.score = 0
                 self.model.right_paddle.score = 0
+                self.model.current_survival_seconds = 0.0
                 self.model.reset_round()
+
+            # Press C or X to cycle through unlocked paddle colors.
+            elif event.key == pygame.K_c:
+                self.model.cycle_paddle_color(1)
+            elif event.key == pygame.K_x:
+                self.model.cycle_paddle_color(-1)
 
             # Escape exits the game.
             elif event.key == pygame.K_ESCAPE:
@@ -325,8 +391,8 @@ class PongView:
         # Draw paddles and the ball.
         left_rect = self.model.left_paddle.rect()
         right_rect = self.model.right_paddle.rect()
-        pygame.draw.rect(self.screen, WHITE, left_rect)
-        pygame.draw.rect(self.screen, WHITE, right_rect)
+        pygame.draw.rect(self.screen, self.model.left_paddle.color, left_rect)
+        pygame.draw.rect(self.screen, self.model.right_paddle.color, right_rect)
         pygame.draw.circle(self.screen, ACCENT, (int(self.model.ball.x), int(self.model.ball.y)), self.model.ball.radius)
 
         # Draw both player scores.
@@ -335,6 +401,14 @@ class PongView:
         self.screen.blit(left_score_text, (WIDTH / 2 - 60, 20))
         self.screen.blit(right_score_text, (WIDTH / 2 + 30, 20))
 
+        # Display the current one-player survival score and current paddle color.
+        high_score_label = self.small_font.render(f"High score: {self.model.high_score_seconds:.1f}s", True, WHITE)
+        self.screen.blit(high_score_label, (20, 20))
+
+        color_text = self.model.selected_paddle_color.title()
+        color_label = self.small_font.render(f"Color: {color_text}   C/X to change", True, WHITE)
+        self.screen.blit(color_label, (20, 52))
+
         # Show the selected play mode.
         mode_label = self.small_font.render(
             "Mode: 1-player vs CPU" if self.model.mode == "single" else "Mode: 2-player local",
@@ -342,6 +416,11 @@ class PongView:
             WHITE
         )
         self.screen.blit(mode_label, (20, HEIGHT - 35))
+
+        # Also display unlocked colors for a junior developer to understand the system.
+        unlocked_text = ", ".join(self.model.unlocked_paddle_colors)
+        unlocked_label = self.small_font.render(f"Unlocked: {unlocked_text}", True, WHITE)
+        self.screen.blit(unlocked_label, (600, HEIGHT - 35))
 
         # If someone reached the win condition, display a winner message.
         if self.model.is_game_over():
@@ -387,6 +466,6 @@ class PongGame:
 
 
 # Start the game when the script is executed directly.
-if __name__ == "main__":
+if __name__ == "__main__":
     game = PongGame()
     game.run()
